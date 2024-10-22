@@ -2,6 +2,21 @@ package zstd
 
 /*
 #include "zstd.h"
+#include "zalloc.h"
+
+typedef void* (*ZSTD_allocFunction) (void* opaque, size_t size);
+typedef void  (*ZSTD_freeFunction) (void* opaque, void* address);
+typedef struct { ZSTD_allocFunction customAlloc; ZSTD_freeFunction customFree; void* opaque; } ZSTD_customMem;
+
+ZSTD_CCtx*    ZSTD_createCCtx_advanced(ZSTD_customMem customMem);
+
+void *customalloc(void* opaque, size_t size) {
+   return zalloc(size);
+}
+
+void customfree(void* opaque, void* address) {
+   zfree(address);
+}
 */
 import "C"
 import (
@@ -32,17 +47,25 @@ type ctx struct {
 }
 
 // Create a new ZStd Context.
-//  When compressing/decompressing many times, it is recommended to allocate a
-//  context just once, and re-use it for each successive compression operation.
-//  This will make workload friendlier for system's memory.
-//  Note : re-using context is just a speed / resource optimization.
-//         It doesn't change the compression ratio, which remains identical.
-//  Note 2 : In multi-threaded environments,
-//         use one different context per thread for parallel execution.
 //
+//	When compressing/decompressing many times, it is recommended to allocate a
+//	context just once, and re-use it for each successive compression operation.
+//	This will make workload friendlier for system's memory.
+//	Note : re-using context is just a speed / resource optimization.
+//	       It doesn't change the compression ratio, which remains identical.
+//	Note 2 : In multi-threaded environments,
+//	       use one different context per thread for parallel execution.
 func NewCtx() Ctx {
+	//return C.ZSTD_createCCtx()
+	// Setup our custom allocator
+	mem := C.ZSTD_customMem{
+		customAlloc: (C.ZSTD_allocFunction)(unsafe.Pointer(C.customalloc)),
+		customFree:  (C.ZSTD_freeFunction)(unsafe.Pointer(C.customfree)),
+		opaque:      nil, // Set as needed
+	}
+
 	c := &ctx{
-		cctx: C.ZSTD_createCCtx(),
+		cctx: C.ZSTD_createCCtx_advanced(mem),
 		dctx: C.ZSTD_createDCtx(),
 	}
 
