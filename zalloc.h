@@ -5,5 +5,6 @@
 
 void* zalloc(size_t size);
 void zfree(void* addr); 
+void dumparenas();
 
 #endif
