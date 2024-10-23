@@ -8,6 +8,7 @@
 #include "zalloc.h"
 
 //#define INDEBUG
+#define DODUMPBUCKETS
 
 #ifdef INDEBUG
 
@@ -125,7 +126,7 @@ void* zalloc(size_t size) {
 
         DEBUG("alloced : %p\n", (void *)pointer);
 
-	#if defined INDEBUG
+	#if defined DODUMPBUCKETS
 	dumpbuckets();
 	#endif
 
