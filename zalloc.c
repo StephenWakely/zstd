@@ -8,7 +8,7 @@
 #include "zalloc.h"
 
 //#define INDEBUG
-#define DODUMPBUCKETS
+//#define DODUMPBUCKETS
 
 #ifdef INDEBUG
 
@@ -26,7 +26,7 @@
 #endif
 
 // This is a fairly large assumption that we won't have more that 128 allocations
-// using zstd. Initial tests show around 13.
+// using zstd. Initial tests show around 20.
 #define MAX_BUCKETS 128
 
 // The header for each bucket 
@@ -34,6 +34,9 @@
 #define HEADER_SIZE(h, idx) (h[idx * 3 + 1])
 #define HEADER_ADDR(h, idx) (h[idx * 3 + 2])
 
+#define HEADER_END(h) (h + MAX_BUCKETS * 3)
+
+static long end = 0;
 static long* header = NULL; 
 static pthread_mutex_t header_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -50,8 +53,12 @@ size_t roundsize(size_t v) {
   return v;
 }
 
-// Create a new bucket with 1gb of space allocated.
-void* new_bucket(size_t size) {
+size_t align_to_word(size_t n) {
+    return (n + sizeof(void*) - 1) & ~(sizeof(void*) - 1);
+}
+
+// Create a new arena with 1gb of space allocated.
+void* new_arena(size_t size) {
   void* buffer = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (buffer == MAP_FAILED) {
     perror("mmap");
@@ -65,29 +72,32 @@ void* new_bucket(size_t size) {
 // If it hasn't been initialised, we create one 
 void* get_header() {
   long* ret = __atomic_load_n(&header, __ATOMIC_RELAXED);
-  if ( ret != NULL) {
+  if (ret != NULL) {
     return (void*)ret;
   }
 
   pthread_mutex_lock(&header_mutex);
 
-  // Check someone hasn't sneaked in before us to create the bucket.
+  // Check someone hasn't sneaked in before us to create the header.
   ret = __atomic_load_n(&header, __ATOMIC_RELAXED);
-  if ( ret != NULL) {
+  if (ret != NULL) {
     return (void*)ret;
   }
 
-  // Mmap our bucket
-  void* h = new_bucket(MAX_BUCKETS * 3);
+  // Mmap our arena at a gig
+  void* h = new_arena(1 << 30);
 
   // Clear enough space for 128 buckets.
   memset(h, 0, MAX_BUCKETS * 3);
   __atomic_store(&header, &h, __ATOMIC_RELAXED);
 
+  long e = align_to_word((MAX_BUCKETS + 1) * 3);
+  __atomic_store(&end, &e, __ATOMIC_RELAXED);
+
   pthread_mutex_unlock(&header_mutex);
 
   DEBUG("Made header\n");
-
+  
   return h;
 }
 
@@ -103,34 +113,44 @@ void* zalloc(size_t size) {
   // Find a free bucket
   for (size_t bucket_idx = 0; bucket_idx < MAX_BUCKETS; bucket_idx++) {
     // Is this bucket the size we want? If it is zero it hopefully means it hasn't been alloced
-    // and we can claim it.
-    long allocedsize = __atomic_load_n(&HEADER_SIZE(h, bucket_idx), __ATOMIC_RELAXED);
+    // and we can claim it. I think we can get away without loading this atomically since we
+    // check again after claiming.
+    long allocedsize = HEADER_SIZE(h, bucket_idx);
     if (allocedsize == (long)upper_size || allocedsize == 0) {
       // Try to claim this bucket.
       long expected = 0;
       if (__atomic_compare_exchange_n(&HEADER_OWNED(h, bucket_idx), &expected, 1,
 				      1, __ATOMIC_RELAXED,
 				      __ATOMIC_RELAXED) != 0) {
-	DEBUG("The bucket %zu is ours!\n", bucket_idx);
-	// This bucket is ours.
-	long pointer =
-	    __atomic_load_n(&HEADER_ADDR(h, bucket_idx), __ATOMIC_RELAXED);
-	if (pointer == 0) {
-	  // Allocate some space
-	  long bucket = (long)new_bucket(upper_size);
-	  __atomic_store(&HEADER_ADDR(h, bucket_idx), &bucket, __ATOMIC_RELAXED);
-	  __atomic_store(&HEADER_SIZE(h, bucket_idx), (long*)&upper_size, __ATOMIC_RELAXED);
-	  pointer = (long)bucket;
-	  DEBUG("bucket needs allocating : %p %zu(rounded to %zu)\n", (void *)bucket, size, upper_size);
-	}
 
-        DEBUG("alloced : %p\n", (void *)pointer);
+	// We have to check the size again in case another thread claimed it and set the size
+	// after we checked earlier.
+	long allocedsize = HEADER_SIZE(h, bucket_idx);
+	if (allocedsize == (long)upper_size || allocedsize == 0) {
+	  DEBUG("The bucket %zu is ours!\n", bucket_idx);
+	  // This bucket is ours.
+	  long pointer = HEADER_ADDR(h, bucket_idx);
+	  if (pointer == 0) {
+	    // Allocate some space
+	    long bucket =
+		(long)HEADER_END(h) +
+		__atomic_fetch_add(&end, upper_size, __ATOMIC_RELAXED);
 
-	#if defined DODUMPBUCKETS
-	dumpbuckets();
-	#endif
+            HEADER_ADDR(h, bucket_idx) = bucket;
+            HEADER_SIZE(h, bucket_idx) = upper_size;
+            pointer = bucket;
+            DEBUG("bucket needs allocating : %p %zu(rounded to %zu)\n",
+                  (void *)bucket, size, upper_size);
+          }
 
-        return (void *)pointer;
+          DEBUG("alloced : %p\n", (void *)pointer);
+
+#if defined DODUMPBUCKETS
+          dumpbuckets();
+#endif
+
+          return (void *)pointer;
+        }
       }
     } else {
       DEBUG("Wrong size for idx %zu wanted %zu got %ld\n", bucket_idx, size, allocedsize);
@@ -149,8 +169,9 @@ void zfree(void* addr) {
 
   for (size_t bucket_idx=0; bucket_idx < MAX_BUCKETS; bucket_idx++) {
     DEBUG("Check bucket to free %zu\n", bucket_idx);
-    long bucket = __atomic_load_n(&HEADER_ADDR(h, bucket_idx), __ATOMIC_RELAXED);
-    DEBUG("Got bucket %zu\n", bucket);
+    //long bucket = __atomic_load_n(&HEADER_ADDR(h, bucket_idx), __ATOMIC_RELAXED);
+    long bucket = HEADER_ADDR(h, bucket_idx);
+    DEBUG("Got bucket %p\n", (void *)bucket);
     if (bucket == (long)addr) {
       // Unset the flag so it can be reused
       __atomic_store_n(&HEADER_OWNED(h, bucket_idx), 0, __ATOMIC_RELAXED);
