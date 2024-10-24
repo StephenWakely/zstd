@@ -85,7 +85,7 @@ void* get_header() {
   }
 
   // Mmap our arena at a gig
-  void* h = new_arena(1 << 30);
+  long* h = (long*)new_arena(1 << 30);
 
   // Clear enough space for 128 buckets.
   memset(h, 0, MAX_BUCKETS * 3);
