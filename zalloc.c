@@ -14,6 +14,7 @@
 
 #define DEBUG(msg, ...)           \
   do {                            \
+
     printf("zalloc: ");           \
     printf(msg, ##__VA_ARGS__);   \
     fflush(stdout);               \
@@ -37,7 +38,6 @@
 #define HEADER_END(h) (h + MAX_BUCKETS * 3)
 
 static long end = 0;
-static long max_idx = 0;
 static long* header = NULL; 
 static pthread_mutex_t header_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -137,9 +137,6 @@ void* zalloc(size_t size) {
 		(long)HEADER_END(h) +
 		__atomic_fetch_add(&end, upper_size, __ATOMIC_RELAXED);
 
-	    // Increment the max index
-	    __atomic_fetch_add(&max_idx, 1, __ATOMIC_RELAXED);
-
             HEADER_ADDR(h, bucket_idx) = bucket;
             HEADER_SIZE(h, bucket_idx) = upper_size;
             pointer = bucket;
@@ -171,29 +168,6 @@ void zfree(void* addr) {
   long* h = get_header();
   DEBUG("Need to free %p\n", addr);
 
-  long min = 0;
-  long max = __atomic_load_n(&max_idx, __ATOMIC_RELAXED);
-
-  while (min <= max) {
-    long mid = min + (max - min) / 2;
-    DEBUG("Checking %ld %ld %ld\n", min, mid, max);
-    long bucket = HEADER_ADDR(h, mid);
-    if ((long)addr == bucket) {
-      __atomic_store_n(&HEADER_OWNED(h, mid), 0, __ATOMIC_RELAXED);
-      DEBUG("Freed\n");
-      return;
-    } else if ((long)addr > bucket) {
-	min = mid + 1;
-    } else if ((long)addr < bucket) {
-	max = mid - 1;
-    }
-  }
-  
-  // Sometimes, due to threading timings the addresses aren't always
-  // in order, so we need to fall back to a sequential scan to find the
-  // address to free.
-  DEBUG("Cant find %p with binary search\n", addr);
-
   for (size_t bucket_idx=0; bucket_idx < MAX_BUCKETS; bucket_idx++) {
     DEBUG("Check bucket to free %zu\n", bucket_idx);
     //long bucket = __atomic_load_n(&HEADER_ADDR(h, bucket_idx), __ATOMIC_RELAXED);
@@ -206,7 +180,6 @@ void zfree(void* addr) {
       return;
     }
   }
-
   
   perror("couldn't find bucket to free");
 }
