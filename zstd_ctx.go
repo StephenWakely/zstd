@@ -22,7 +22,6 @@ import "C"
 import (
 	"bytes"
 	"io/ioutil"
-	"runtime"
 	"unsafe"
 )
 
@@ -39,6 +38,8 @@ type Ctx interface {
 	// prevent allocation.  If it is too small, or if nil is passed, a new buffer
 	// will be allocated and returned.
 	Decompress(dst, src []byte) ([]byte, error)
+
+	Free()
 }
 
 type ctx struct {
@@ -69,7 +70,7 @@ func NewCtx() Ctx {
 		dctx: C.ZSTD_createDCtx(),
 	}
 
-	runtime.SetFinalizer(c, finalizeCtx)
+	//runtime.SetFinalizer(c, finalizeCtx)
 	return c
 }
 
@@ -146,6 +147,10 @@ func (c *ctx) Decompress(dst, src []byte) ([]byte, error) {
 	r := NewReader(bytes.NewReader(src))
 	defer r.Close()
 	return ioutil.ReadAll(r)
+}
+
+func (c *ctx) Free() {
+	finalizeCtx(c)
 }
 
 func finalizeCtx(c *ctx) {
