@@ -12,6 +12,9 @@ import (
 )
 
 type Ctx interface {
+	// SetParameter sets a given parameter for the context.
+	SetParameter(param ZSTD_cParameter, value int) error
+
 	// Compress src into dst.  If you have a buffer to use, you can pass it to
 	// prevent allocation.  If it is too small, or if nil is passed, a new buffer
 	// will be allocated and returned.
@@ -32,14 +35,14 @@ type ctx struct {
 }
 
 // Create a new ZStd Context.
-//  When compressing/decompressing many times, it is recommended to allocate a
-//  context just once, and re-use it for each successive compression operation.
-//  This will make workload friendlier for system's memory.
-//  Note : re-using context is just a speed / resource optimization.
-//         It doesn't change the compression ratio, which remains identical.
-//  Note 2 : In multi-threaded environments,
-//         use one different context per thread for parallel execution.
 //
+//	When compressing/decompressing many times, it is recommended to allocate a
+//	context just once, and re-use it for each successive compression operation.
+//	This will make workload friendlier for system's memory.
+//	Note : re-using context is just a speed / resource optimization.
+//	       It doesn't change the compression ratio, which remains identical.
+//	Note 2 : In multi-threaded environments,
+//	       use one different context per thread for parallel execution.
 func NewCtx() Ctx {
 	c := &ctx{
 		cctx: C.ZSTD_createCCtx(),
@@ -48,6 +51,34 @@ func NewCtx() Ctx {
 
 	runtime.SetFinalizer(c, finalizeCtx)
 	return c
+}
+
+const (
+	CompressionLevel           = C.ZSTD_c_compressionLevel
+	WindowLog                  = C.ZSTD_c_windowLog
+	HashLog                    = C.ZSTD_c_hashLog
+	ChainLog                   = C.ZSTD_c_chainLog
+	SearchLog                  = C.ZSTD_c_searchLog
+	MinMatch                   = C.ZSTD_c_minMatch
+	TargetLength               = C.ZSTD_c_targetLength
+	Strategy                   = C.ZSTD_c_strategy
+	EnableLongDistanceMatching = C.ZSTD_c_enableLongDistanceMatching
+	LdmHashLog                 = C.ZSTD_c_ldmHashLog
+	LdmMinMatch                = C.ZSTD_c_ldmMinMatch
+	LdmBucketSizeLog           = C.ZSTD_c_ldmBucketSizeLog
+	LdmHashRateLog             = C.ZSTD_c_ldmHashRateLog
+	ContentSizeFlag            = C.ZSTD_c_contentSizeFlag
+	ChecksumFlag               = C.ZSTD_c_checksumFlag
+	DictIDFlag                 = C.ZSTD_c_dictIDFlag
+	NbWorkers                  = C.ZSTD_c_nbWorkers
+	JobSize                    = C.ZSTD_c_jobSize
+	OverlapLog                 = C.ZSTD_c_overlapLog
+)
+
+type ZSTD_cParameter = C.ZSTD_cParameter
+
+func (c *ctx) SetParameter(param ZSTD_cParameter, value int) error {
+	return getError(int(C.ZSTD_CCtx_setParameter(c.cctx, param, C.int(value))))
 }
 
 func (c *ctx) Compress(dst, src []byte) ([]byte, error) {
