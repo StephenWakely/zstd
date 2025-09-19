@@ -24,6 +24,7 @@ var (
 	CParamMinMatch         = CParameter(C.ZSTD_c_minMatch)
 	CParamTargetLength     = CParameter(C.ZSTD_c_targetLength)
 	CParamStrategy         = CParameter(C.ZSTD_c_strategy)
+	CParamNbWorkers        = CParameter(C.ZSTD_c_nbWorkers)
 
 	// Other commonly used ones (add more as you need):
 	// CParamEnableLongDistanceMatching = C.ZSTD_c_enableLongDistanceMatching
