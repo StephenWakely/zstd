@@ -6,9 +6,42 @@ package zstd
 import "C"
 import (
 	"bytes"
+	"errors"
 	"io/ioutil"
 	"runtime"
 	"unsafe"
+)
+
+type CParameter = C.ZSTD_cParameter
+type Strategy = C.ZSTD_strategy
+
+var (
+	CParamCompressionLevel = CParameter(C.ZSTD_c_compressionLevel)
+	CParamWindowLog        = CParameter(C.ZSTD_c_windowLog)
+	CParamHashLog          = CParameter(C.ZSTD_c_hashLog)
+	CParamChainLog         = CParameter(C.ZSTD_c_chainLog)
+	CParamSearchLog        = CParameter(C.ZSTD_c_searchLog)
+	CParamMinMatch         = CParameter(C.ZSTD_c_minMatch)
+	CParamTargetLength     = CParameter(C.ZSTD_c_targetLength)
+	CParamStrategy         = CParameter(C.ZSTD_c_strategy)
+
+	// Other commonly used ones (add more as you need):
+	// CParamEnableLongDistanceMatching = C.ZSTD_c_enableLongDistanceMatching
+	// CParamLDMLengthLog               = C.ZSTD_c_ldmHashLog
+	// CParamJobSize                    = C.ZSTD_c_jobSize
+	// CParamOverlapLog                 = C.ZSTD_c_overlapLog
+)
+
+var (
+	StrategyFast     = C.ZSTD_fast
+	StrategyDfast    = C.ZSTD_dfast
+	StrategyGreedy   = C.ZSTD_greedy
+	StrategyLazy     = C.ZSTD_lazy
+	StrategyLazy2    = C.ZSTD_lazy2
+	StrategyBtLazy2  = C.ZSTD_btlazy2
+	StrategyBtOpt    = C.ZSTD_btopt
+	StrategyBtUltra  = C.ZSTD_btultra
+	StrategyBtUltra2 = C.ZSTD_btultra2
 )
 
 type Ctx interface {
@@ -16,6 +49,8 @@ type Ctx interface {
 	// prevent allocation.  If it is too small, or if nil is passed, a new buffer
 	// will be allocated and returned.
 	Compress(dst, src []byte) ([]byte, error)
+
+	Compress2(dst, src []byte) ([]byte, error)
 
 	// CompressLevel is the same as Compress but you can pass a compression level
 	CompressLevel(dst, src []byte, level int) ([]byte, error)
@@ -33,11 +68,19 @@ type Ctx interface {
 	// It returns the number of bytes copied and an error if any is encountered. If
 	// dst is too small, DecompressInto errors.
 	DecompressInto(dst, src []byte) (int, error)
+
+	SetParameter(p CParameter, value int) error
+	SizeOf() uint
 }
 
 type ctx struct {
 	cctx *C.ZSTD_CCtx
 	dctx *C.ZSTD_DCtx
+}
+
+func GetBounds(p CParameter) (int, int) {
+	bounds := C.ZSTD_cParam_getBounds(p)
+	return int(bounds.lowerBound), int(bounds.upperBound)
 }
 
 // Create a new ZStd Context.
@@ -61,6 +104,43 @@ func NewCtx() Ctx {
 
 func (c *ctx) Compress(dst, src []byte) ([]byte, error) {
 	return c.CompressLevel(dst, src, DefaultCompression)
+}
+
+func (c *ctx) Compress2(dst, src []byte) ([]byte, error) {
+	bound := CompressBound(len(src))
+	if cap(dst) >= bound {
+		dst = dst[0:bound] // Reuse dst buffer
+	} else {
+		dst = make([]byte, bound)
+	}
+
+	// We need unsafe.Pointer(&src[0]) in the Cgo call to avoid "Go pointer to Go pointer" panics.
+	// This means we need to special case empty input. See:
+	// https://github.com/golang/go/issues/14210#issuecomment-346402945
+	var cWritten C.size_t
+	if len(src) == 0 {
+		cWritten = C.ZSTD_compress2(
+			c.cctx,
+			unsafe.Pointer(&dst[0]),
+			C.size_t(len(dst)),
+			unsafe.Pointer(nil),
+			C.size_t(0))
+	} else {
+		cWritten = C.ZSTD_compress2(
+			c.cctx,
+			unsafe.Pointer(&dst[0]),
+			C.size_t(len(dst)),
+			unsafe.Pointer(&src[0]),
+			C.size_t(len(src)))
+	}
+
+	written := int(cWritten)
+	// Check if the return is an Error code
+	if err := getError(written); err != nil {
+		return nil, err
+	}
+	return dst[:written], nil
+
 }
 
 func (c *ctx) CompressLevel(dst, src []byte, level int) ([]byte, error) {
@@ -136,6 +216,18 @@ func (c *ctx) DecompressInto(dst, src []byte) (int, error) {
 		C.size_t(len(src))))
 	err := getError(written)
 	return written, err
+}
+
+func (c *ctx) SetParameter(p CParameter, value int) error {
+	res := C.ZSTD_CCtx_setParameter(c.cctx, p, C.int(value))
+	if C.ZSTD_isError(res) != 0 {
+		return errors.New(C.GoString(C.ZSTD_getErrorName(res)))
+	}
+	return nil
+}
+
+func (c *ctx) SizeOf() uint {
+	return uint(C.ZSTD_sizeof_CCtx(c.cctx))
 }
 
 func finalizeCtx(c *ctx) {
