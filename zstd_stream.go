@@ -144,6 +144,38 @@ func NewWriterLevelDict(w io.Writer, level int, dict []byte) *Writer {
 	}
 }
 
+func NewWriterParamsDict(w io.Writer, dict []byte, set func(func(CParameter, int))) *Writer {
+	var err error
+	ctx := C.ZSTD_createCStream()
+
+	// Load dictionnary if any
+	if dict != nil {
+		err = getError(int(C.ZSTD_CCtx_loadDictionary(ctx,
+			unsafe.Pointer(&dict[0]),
+			C.size_t(len(dict)),
+		)))
+	}
+
+	if err == nil {
+		// Only set params if the ctx is not in error already
+		set(func(param CParameter, value int) {
+			e := getError(int(C.ZSTD_CCtx_setParameter(ctx, param, C.int(value))))
+			if err == nil && e != nil {
+				err = e
+			}
+		})
+	}
+
+	return &Writer{
+		ctx:              ctx,
+		dict:             dict,
+		dstBuffer:        make([]byte, CompressBound(1024)),
+		firstError:       err,
+		underlyingWriter: w,
+		resultBuffer:     new(C.compressStream2_result),
+	}
+}
+
 // Write writes a compressed form of p to the underlying io.Writer.
 func (w *Writer) Write(p []byte) (int, error) {
 	if w.firstError != nil {
